@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>保险产品推荐 Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f5f5f5; height: 100vh; display: flex; flex-direction: column; }
+  .header { background: #1a73e8; color: #fff; padding: 14px 20px; font-size: 18px; font-weight: 600; flex-shrink: 0; }
+  .chat-area { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 75%; padding: 10px 14px; border-radius: 12px; line-height: 1.6; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: #1a73e8; color: #fff; border-bottom-right-radius: 4px; }
+  .msg.assistant { align-self: flex-start; background: #fff; color: #333; border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .msg.system-rec { align-self: center; background: #e8f5e9; color: #2e7d32; border-radius: 8px; max-width: 90%; font-size: 13px; }
+  .rec-card { background: #fff; border-left: 4px solid #1a73e8; padding: 12px 14px; margin: 10px 0; border-radius: 4px; }
+  .rec-card h4 { color: #1a73e8; margin-bottom: 8px; font-size: 15px; }
+  .rec-card .rec-reason { font-size: 13px; color: #555; line-height: 1.6; margin-bottom: 8px; }
+  .rec-card .rec-details { border-top: 1px solid #eee; padding-top: 8px; }
+  .rec-group { margin-bottom: 6px; }
+  .rec-group-title { font-size: 13px; font-weight: 600; color: #1a73e8; margin-bottom: 3px; }
+  .rec-field { font-size: 12px; color: #666; line-height: 1.5; padding-left: 8px; }
+  .rec-field span.fname { color: #333; font-weight: 500; }
+  .rec-toggle { font-size: 12px; color: #1a73e8; cursor: pointer; border: none; background: none; padding: 4px 0; margin-top: 4px; }
+  .input-bar { flex-shrink: 0; display: flex; gap: 8px; padding: 12px 20px; background: #fff; border-top: 1px solid #e0e0e0; }
+  .input-bar input { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; }
+  .input-bar input:focus { border-color: #1a73e8; }
+  .btn { padding: 10px 18px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; font-weight: 500; }
+  .btn-send { background: #1a73e8; color: #fff; }
+  .btn-send:hover { background: #1557b0; }
+  .btn-rec { background: #ff9800; color: #fff; }
+  .btn-rec:hover { background: #e68900; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .typing { align-self: flex-start; color: #999; font-size: 13px; padding: 6px 0; }
+</style>
+</head>
+<body>
+
+<div class="header">🏥 保险产品智能推荐 Demo</div>
+<div class="chat-area" id="chatArea"></div>
+<div class="input-bar">
+  <input id="userInput" placeholder="输入您的保险需求..." autocomplete="off">
+  <button class="btn btn-send" id="btnSend" onclick="sendChat()">发送</button>
+  <button class="btn btn-rec" id="btnRec" onclick="doRecommend()">推荐产品</button>
+</div>
+
+<script>
+const chatArea = document.getElementById('chatArea');
+const userInput = document.getElementById('userInput');
+const btnSend = document.getElementById('btnSend');
+const btnRec = document.getElementById('btnRec');
+
+let messages = [];       // conversation history for LLM
+let systemExtra = '';     // recommendation context injected into system prompt
+
+userInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+
+function addBubble(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  chatArea.appendChild(div);
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function addRecCards(recs) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'msg system-rec';
+  wrapper.innerHTML = '<b>📋 为您推荐以下产品：</b>';
+  recs.forEach((r, idx) => {
+    const card = document.createElement('div');
+    card.className = 'rec-card';
+
+    // Product name
+    let html = '<h4>' + escHtml(r.product_name) + '</h4>';
+    // Recommendation reason
+    html += '<div class="rec-reason">' + escHtml(r.recommendation_reason) + '</div>';
+
+    // Product details by group
+    const groups = r.fields_by_group || {};
+    const groupNames = Object.keys(groups);
+    if (groupNames.length > 0) {
+      const detailId = 'rec-detail-' + idx;
+      html += '<button class="rec-toggle" onclick="toggleDetail(\'' + detailId + '\', this)">▶ 查看产品详情</button>';
+      html += '<div class="rec-details" id="' + detailId + '" style="display:none;">';
+      groupNames.forEach(gname => {
+        html += '<div class="rec-group">';
+        html += '<div class="rec-group-title">' + escHtml(gname) + '</div>';
+        groups[gname].forEach(f => {
+          html += '<div class="rec-field"><span class="fname">' + escHtml(f.name) + '：</span>' + escHtml(f.value) + '</div>';
+        });
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    card.innerHTML = html;
+    wrapper.appendChild(card);
+  });
+  chatArea.appendChild(wrapper);
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function toggleDetail(id, btn) {
+  const el = document.getElementById(id);
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    btn.textContent = '▼ 收起产品详情';
+  } else {
+    el.style.display = 'none';
+    btn.textContent = '▶ 查看产品详情';
+  }
+}
+
+function showTyping(text) {
+  const el = document.createElement('div');
+  el.className = 'typing';
+  el.id = 'typingIndicator';
+  el.textContent = text;
+  chatArea.appendChild(el);
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+function hideTyping() {
+  const el = document.getElementById('typingIndicator');
+  if (el) el.remove();
+}
+
+function setDisabled(v) {
+  btnSend.disabled = v;
+  btnRec.disabled = v;
+  userInput.disabled = v;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function sendChat() {
+  const text = userInput.value.trim();
+  if (!text) return;
+  userInput.value = '';
+
+  messages.push({ role: 'user', content: text });
+  addBubble('user', text);
+  setDisabled(true);
+  showTyping('AI 思考中...');
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, system_extra: systemExtra }),
+    });
+    const data = await res.json();
+    hideTyping();
+    messages.push({ role: 'assistant', content: data.reply });
+    addBubble('assistant', data.reply);
+  } catch (e) {
+    hideTyping();
+    addBubble('assistant', '请求出错，请稍后重试。');
+  }
+  setDisabled(false);
+  userInput.focus();
+}
+
+async function doRecommend() {
+  if (messages.length === 0) {
+    addBubble('assistant', '请先告诉我您的保险需求，再点击推荐产品。');
+    return;
+  }
+  setDisabled(true);
+  showTyping('正在为您分析和推荐产品，请稍候（约30秒）...');
+
+  try {
+    const res = await fetch('/api/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages }),
+    });
+    const data = await res.json();
+    hideTyping();
+
+    if (data.status === 'success' && data.recommendations.length > 0) {
+      addRecCards(data.recommendations);
+
+      // Build context for follow-up chat (include product details + reason)
+      systemExtra = data.recommendations.map(r => {
+        let text = '【' + r.product_name + '】\n';
+        // Add key product fields
+        const groups = r.fields_by_group || {};
+        Object.keys(groups).forEach(gname => {
+          text += '\n' + gname + '：\n';
+          groups[gname].forEach(f => { text += '  ' + f.name + '：' + f.value + '\n'; });
+        });
+        text += '\n推荐理由：' + r.recommendation_reason;
+        return text;
+      }).join('\n\n');
+
+      // Also add a summary assistant message so LLM knows what was recommended
+      const summary = '我已为您推荐了以下产品：' + data.recommendations.map(r => r.product_name).join('、') + '。您可以针对这些产品提问。';
+      messages.push({ role: 'assistant', content: summary });
+    } else {
+      const errMsg = data.error_message || '未能找到合适的产品，请尝试描述更多需求。';
+      addBubble('assistant', errMsg);
+    }
+  } catch (e) {
+    hideTyping();
+    addBubble('assistant', '推荐请求出错，请稍后重试。');
+  }
+  setDisabled(false);
+  userInput.focus();
+}
+</script>
+</body>
+</html>
