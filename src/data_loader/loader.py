@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import Optional
@@ -49,30 +50,41 @@ class DataLoader:
         if force_reload:
             self._truncate_all()
 
-        # Snapshot existing product IDs per source before loading
-        existing_products = {}
-        for p in self.repo.get_all_products():
-            existing_products.setdefault(p["source_file"], set()).add(
-                p["product_name"]
-            )
+        existing_snapshots = {
+            row["source_file"]: row for row in self.repo.get_source_snapshots()
+        }
 
         loaded_sources: set[str] = set()
         categories_changed: set[str] = set()
         categories_loaded: set[str] = set()
         for fp in xlsx_files:
             try:
-                category = self._load_file(fp)
+                source = fp.name
+                category = self._category(source)
+                content_hash = self._content_hash(fp)
+
                 loaded_sources.add(fp.name)
-                if category:
-                    categories_loaded.add(category)
-                    # Check if products actually changed
-                    new_products = {
-                        p["product_name"]
-                        for p in self.repo.get_products_by_category(category)
-                    }
-                    old_products = existing_products.get(fp.name, set())
-                    if new_products != old_products or force_reload:
-                        categories_changed.add(category)
+                categories_loaded.add(category)
+
+                snapshot = existing_snapshots.get(source)
+                has_existing_products = bool(self.repo.get_products_by_source(source))
+                unchanged = (
+                    not force_reload
+                    and snapshot is not None
+                    and snapshot["content_hash"] == content_hash
+                    and snapshot["category"] == category
+                    and has_existing_products
+                )
+
+                if unchanged:
+                    logger.info(
+                        "Skipping reload for %s (source unchanged)", fp.name
+                    )
+                    continue
+
+                self._load_file(fp)
+                self.repo.upsert_source_snapshot(source, category, content_hash)
+                categories_changed.add(category)
                 logger.info("Loaded %s", fp.name)
             except Exception:
                 logger.exception("Failed to load %s", fp.name)
@@ -114,6 +126,14 @@ class DataLoader:
             p for p in self.data_dir.iterdir()
             if p.suffix == ".xlsx" and not p.name.startswith("~")
         )
+
+    @staticmethod
+    def _content_hash(file_path: Path) -> str:
+        digest = hashlib.sha256()
+        with file_path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def _load_file(self, file_path: Path) -> Optional[str]:
         source = file_path.name
@@ -173,14 +193,18 @@ class DataLoader:
         return name
 
     def _cleanup_stale(self, current_sources: set[str]) -> None:
-        existing = {p["source_file"] for p in self.repo.get_all_products()}
-        for stale in existing - current_sources:
+        product_sources = {p["source_file"] for p in self.repo.get_all_products()}
+        snapshot_sources = {
+            row["source_file"] for row in self.repo.get_source_snapshots()
+        }
+        for stale in (product_sources | snapshot_sources) - current_sources:
             logger.info("Removing stale source: %s", stale)
             self.repo.clear_source(stale)
 
     def _truncate_all(self) -> None:
         conn = self.db.get_connection()
         conn.executescript(
+            "DELETE FROM source_snapshots;"
             "DELETE FROM group_scores;"
             "DELETE FROM product_values;"
             "DELETE FROM field_metadata;"

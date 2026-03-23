@@ -37,6 +37,10 @@ class ProductRepository:
             "(SELECT DISTINCT category FROM products WHERE source_file = ?)",
             (source_file,),
         )
+        self._conn.execute(
+            "DELETE FROM source_snapshots WHERE source_file = ?",
+            (source_file,),
+        )
         self._conn.commit()
 
     def clear_category_metadata(self, category: str) -> None:
@@ -153,6 +157,29 @@ class ProductRepository:
         )
         self._conn.commit()
 
+    def upsert_source_snapshot(
+        self, source_file: str, category: str, content_hash: str
+    ) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO source_snapshots "
+            "(source_file, category, content_hash) VALUES (?, ?, ?)",
+            (source_file, category, content_hash),
+        )
+        self._conn.commit()
+
+    def get_source_snapshots(self) -> list[dict]:
+        return self.execute_query(
+            "SELECT source_file, category, content_hash FROM source_snapshots"
+        )
+
+    def get_source_snapshot(self, source_file: str) -> Optional[dict]:
+        rows = self.execute_query(
+            "SELECT source_file, category, content_hash "
+            "FROM source_snapshots WHERE source_file = ?",
+            (source_file,),
+        )
+        return rows[0] if rows else None
+
     # ── read helpers ──────────────────────────────────────────────
 
     def execute_query(self, sql: str, params: tuple = ()) -> list[dict]:
@@ -165,6 +192,13 @@ class ProductRepository:
     def get_all_products(self) -> list[dict]:
         return self.execute_query(
             "SELECT id, product_name, category, source_file FROM products"
+        )
+
+    def get_products_by_source(self, source_file: str) -> list[dict]:
+        return self.execute_query(
+            "SELECT id, product_name, category, source_file "
+            "FROM products WHERE source_file = ?",
+            (source_file,),
         )
 
     def get_product_by_id(self, product_id: int) -> Optional[dict]:

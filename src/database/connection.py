@@ -75,6 +75,12 @@ class DatabaseConnection:
                 UNIQUE(product_id, field_group)
             );
 
+            CREATE TABLE IF NOT EXISTS source_snapshots (
+                source_file   TEXT PRIMARY KEY,
+                category      TEXT NOT NULL,
+                content_hash  TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_pv_field
                 ON product_values(field_name, field_type);
             CREATE INDEX IF NOT EXISTS idx_pv_product
